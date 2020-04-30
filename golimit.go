@@ -1,17 +1,20 @@
 package golimit
 
-import "sync"
+import (
+	"sync"
+)
 
 type GoLimit struct {
-	max       uint       //并发最大数量
-	num       uint       //当前已有并发数
-	isAddLock bool       //是否已锁定增加
-	addLock   sync.Mutex //(增加并发数的)锁
-	dataLock  sync.Mutex //(修改数据的)锁
+	max       uint             //并发最大数量
+	num       uint             //当前已有并发数
+	isAddLock bool             //是否已锁定增加
+	zeroChan  chan interface{} //为0时广播
+	addLock   sync.Mutex       //(增加并发数的)锁
+	dataLock  sync.Mutex       //(修改数据的)锁
 }
 
 func NewGoLimit(max uint) *GoLimit {
-	return &GoLimit{max: max, num: 0, isAddLock: false}
+	return &GoLimit{max: max, num: 0, isAddLock: false, zeroChan: nil}
 }
 
 //开始一个新协程
@@ -44,6 +47,12 @@ func (g *GoLimit) Done() {
 		g.addLock.Unlock()
 	}
 
+	//0广播
+	if g.num == 0 && g.zeroChan != nil {
+		close(g.zeroChan)
+		g.zeroChan = nil
+	}
+
 	g.dataLock.Unlock()
 }
 
@@ -65,4 +74,25 @@ func (g *GoLimit) SetMax(n uint) {
 	}
 
 	g.dataLock.Unlock()
+}
+
+func (g *GoLimit) WaitZero() {
+	g.dataLock.Lock()
+
+	//无需等待
+	if g.num == 0 {
+		g.dataLock.Unlock()
+		return
+	}
+
+	//无广播通道, 创建一个
+	if g.zeroChan == nil {
+		g.zeroChan = make(chan interface{})
+	}
+
+	//复制通道后解锁, 避免从nil读数据
+	c := g.zeroChan
+	g.dataLock.Unlock()
+
+	<-c
 }
