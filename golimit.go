@@ -1,3 +1,6 @@
+// 协程并发数限制库
+// https://github.com/zh-five/golimit
+
 package golimit
 
 import (
@@ -6,7 +9,7 @@ import (
 
 type GoLimit struct {
 	max       uint             //并发最大数量
-	num       uint             //当前已有并发数
+	count     uint             //当前已有并发数
 	isAddLock bool             //是否已锁定增加
 	zeroChan  chan interface{} //为0时广播
 	addLock   sync.Mutex       //(增加并发数的)锁
@@ -14,7 +17,7 @@ type GoLimit struct {
 }
 
 func NewGoLimit(max uint) *GoLimit {
-	return &GoLimit{max: max, num: 0, isAddLock: false, zeroChan: nil}
+	return &GoLimit{max: max, count: 0, isAddLock: false, zeroChan: nil}
 }
 
 //开始一个新协程
@@ -23,9 +26,9 @@ func (g *GoLimit) Add() {
 	g.addLock.Lock()
 	g.dataLock.Lock()
 
-	g.num += 1
+	g.count += 1
 
-	if g.num < g.max { //未超并发时解锁,后续可以继续增加
+	if g.count < g.max { //未超并发时解锁,后续可以继续增加
 		g.addLock.Unlock()
 	} else { //已到最大并发数, 不解锁并标记. 等数量减少后解锁
 		g.isAddLock = true
@@ -39,16 +42,16 @@ func (g *GoLimit) Add() {
 func (g *GoLimit) Done() {
 	g.dataLock.Lock()
 
-	g.num -= 1
+	g.count -= 1
 
 	//解锁
-	if g.isAddLock == true && g.num < g.max {
+	if g.isAddLock == true && g.count < g.max {
 		g.isAddLock = false
 		g.addLock.Unlock()
 	}
 
 	//0广播
-	if g.num == 0 && g.zeroChan != nil {
+	if g.count == 0 && g.zeroChan != nil {
 		close(g.zeroChan)
 		g.zeroChan = nil
 	}
@@ -62,13 +65,13 @@ func (g *GoLimit) SetMax(n uint) {
 	g.max = n
 
 	//解锁
-	if g.isAddLock == true && g.num < g.max {
+	if g.isAddLock == true && g.count < g.max {
 		g.isAddLock = false
 		g.addLock.Unlock()
 	}
 
 	//加锁
-	if g.isAddLock == false && g.num >= g.max {
+	if g.isAddLock == false && g.count >= g.max {
 		g.isAddLock = true
 		g.addLock.Lock()
 	}
@@ -80,7 +83,7 @@ func (g *GoLimit) WaitZero() {
 	g.dataLock.Lock()
 
 	//无需等待
-	if g.num == 0 {
+	if g.count == 0 {
 		g.dataLock.Unlock()
 		return
 	}
@@ -95,4 +98,8 @@ func (g *GoLimit) WaitZero() {
 	g.dataLock.Unlock()
 
 	<-c
+}
+
+func (g *GoLimit) Count() uint {
+	return g.count
 }
