@@ -20,8 +20,7 @@ func NewGoLimit(max uint) *GoLimit {
 	return &GoLimit{max: max, count: 0, isAddLock: false, zeroChan: nil}
 }
 
-//开始一个新协程
-//若超过数量限制,则阻塞等待.否则计数加1并不阻塞
+//并发计数加1.若 计数>=max_num, 则阻塞,直到 计数<max_num
 func (g *GoLimit) Add() {
 	g.addLock.Lock()
 	g.dataLock.Lock()
@@ -37,8 +36,8 @@ func (g *GoLimit) Add() {
 	g.dataLock.Unlock()
 }
 
-//一个协程完成退出时调用, 计数减1
-//若有阻塞等等,且并发数低于上限,解锁
+//并发计数减1
+//若计数<max_num, 可以使原阻塞的Add()快速解除阻塞
 func (g *GoLimit) Done() {
 	g.dataLock.Lock()
 
@@ -59,6 +58,7 @@ func (g *GoLimit) Done() {
 	g.dataLock.Unlock()
 }
 
+//更新最大并发计数为, 若是调大, 可以使原阻塞的Add()快速解除阻塞
 func (g *GoLimit) SetMax(n uint) {
 	g.dataLock.Lock()
 
@@ -79,6 +79,7 @@ func (g *GoLimit) SetMax(n uint) {
 	g.dataLock.Unlock()
 }
 
+//若当前并发计数为0, 则快速返回; 否则阻塞等待,直到并发计数为0
 func (g *GoLimit) WaitZero() {
 	g.dataLock.Lock()
 
@@ -100,6 +101,12 @@ func (g *GoLimit) WaitZero() {
 	<-c
 }
 
+//获取并发计数
 func (g *GoLimit) Count() uint {
 	return g.count
+}
+
+//获取最大并发计数
+func (g *GoLimit) Max() uint {
+	return g.max
 }
