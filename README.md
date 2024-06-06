@@ -2,7 +2,11 @@
 
 协程的并发数若不限制, 数量太多可能会耗尽某些资源而出现错误. 一般的做法是通过一个带缓冲区的通道来实现,缓存区的大小就是允许并发数的上限,
 创建协程时读取或写入通道,退出协程是则反操作,利用通道的读或写阻塞,限制并发数的上限. 本库未采用这种方案, 
-而是使用了两个sync.Mutex锁实现了并发数限制. 这样可以在运行期间调整并发上限.
+而是使用了两个sync.Mutex锁实现了并发数限制. 这样设计可获得以下一些优势：
+1. 增加并发限制数量不会增加内存消耗
+2. 运行期间可调整并发限制数量
+3. 可阻塞等待所有协程运行结束
+4. 可实时获取当前并发协程数量
 
 ### 一.快速使用
 1.安装
@@ -12,34 +16,32 @@ go get github.com/zh-five/golimit
 
 2.示例
 ```go 
-package main
-
 import (
-	"github.com/zh-five/golimit"
 	"log"
 	"time"
+
+	"github.com/zh-five/golimit"
 )
 
 func main() {
 	log.Println("开始测试...")
-	g := golimit.NewGoLimit(2) //max_num(最大允许并发数)设置为2
+	gl := golimit.NewGoLimit(2) //max_num(最大允许并发数)设置为2
 
 	for i := 0; i < 10; i++ {
 		//并发计数加1.若 计数>=max_num, 则阻塞,直到 计数<max_num
-		g.Add()
+		gl.Add()
 
 		go func(g *golimit.GoLimit, i int) {
-			defer g.Done() //并发计数减1
+			defer gl.Done() //并发计数减1
 
 			time.Sleep(time.Second * 2)
 			log.Println(i, "done")
-		}(g, i)
+		}(gl, i)
 	}
-
 
 	log.Println("循环结束")
 
-	g.WaitZero() //阻塞, 直到所有并发都完成
+	gl.WaitZero() //阻塞, 直到所有并发都完成
 	log.Println("测试结束")
 
 }
