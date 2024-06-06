@@ -5,108 +5,101 @@ package golimit
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 type GoLimit struct {
-	max       uint             //并发最大数量
-	count     uint             //当前已有并发数
-	isAddLock bool             //是否已锁定增加
-	zeroChan  chan interface{} //为0时广播
-	addLock   sync.Mutex       //(增加并发数的)锁
-	dataLock  sync.Mutex       //(修改数据的)锁
+	max   uint64 //并发最大数量
+	count uint64 //add数
+
+	addLock  sync.Mutex //add 等待
+	waitLock sync.Mutex //zero 等待
 }
 
-func NewGoLimit(max uint) *GoLimit {
-	return &GoLimit{max: max, count: 0, isAddLock: false, zeroChan: nil}
+func NewGoLimit(max uint64) *GoLimit {
+	return &GoLimit{max: max, count: 0}
 }
 
-//并发计数加1.若 计数>=max_num, 则阻塞,直到 计数<max_num
-func (g *GoLimit) Add() {
-	g.addLock.Lock()
-	g.dataLock.Lock()
+// 计数加1.若 计数>max_num, 则阻塞,直到 计数<max_num
+func (sf *GoLimit) Add() {
+	count := atomic.AddUint64(&sf.count, 1)
+	max := atomic.LoadUint64(&sf.max)
 
-	g.count += 1
-
-	if g.count < g.max { //未超并发时解锁,后续可以继续增加
-		g.addLock.Unlock()
-	} else { //已到最大并发数, 不解锁并标记. 等数量减少后解锁
-		g.isAddLock = true
+	// 有协程启动，开始阻塞 waitZero()
+	if count == 1 {
+		sf.waitLock.Lock()
 	}
-
-	g.dataLock.Unlock()
+	if count >= max {
+		sf.addLock.Lock()
+	}
 }
 
-//并发计数减1
-//若计数<max_num, 可以使原阻塞的Add()快速解除阻塞
-func (g *GoLimit) Done() {
-	g.dataLock.Lock()
+// 并发计数减1
+// 若计数<max_num, 可以使原阻塞的Add()快速解除阻塞
+func (sf *GoLimit) Done() {
+	count := atomic.AddUint64(&sf.count, ^uint64(0))
+	max := atomic.LoadUint64(&sf.max)
 
-	g.count -= 1
-
-	//解锁
-	if g.isAddLock == true && g.count < g.max {
-		g.isAddLock = false
-		g.addLock.Unlock()
+	// 所有并发协程结束，让 waitZero() 解除阻塞
+	if count == 0 {
+		sf.waitLock.Unlock()
 	}
 
-	//0广播
-	if g.count == 0 && g.zeroChan != nil {
-		close(g.zeroChan)
-		g.zeroChan = nil
+	//
+	if count+1 >= max {
+		sf.addLock.Unlock()
 	}
-
-	g.dataLock.Unlock()
 }
 
-//更新最大并发计数为, 若是调大, 可以使原阻塞的Add()快速解除阻塞
-func (g *GoLimit) SetMax(n uint) {
-	g.dataLock.Lock()
+// 更新最大并发计数为, 若是调大, 可以使原阻塞的Add()快速解除阻塞
+func (sf *GoLimit) SetMax(max uint64) {
+	oldMax := atomic.LoadUint64(&sf.max)
+	atomic.StoreUint64(&sf.max, max)
 
-	g.max = n
+	count := atomic.AddUint64(&sf.count, ^uint64(0))
 
-	//解锁
-	if g.isAddLock == true && g.count < g.max {
-		g.isAddLock = false
-		g.addLock.Unlock()
+	if oldMax == max {
+		// ok
+	} else if oldMax < max {
+		if count >= oldMax { // 有解锁处理
+			// 最大程度解除已阻塞的add
+			end := count
+			if count > max {
+				end = max
+			}
+			for i := oldMax; i < end; i++ {
+				sf.addLock.Unlock()
+			}
+
+			if count < max { // 解除预锁定
+				sf.addLock.Unlock()
+			}
+		}
+	} else if oldMax > max { // 加锁处理
+		if count < oldMax && count >= max { // 原max未锁定，新max需锁定
+			sf.addLock.Lock()
+		}
 	}
-
-	//加锁
-	if g.isAddLock == false && g.count >= g.max {
-		g.isAddLock = true
-		g.addLock.Lock()
-	}
-
-	g.dataLock.Unlock()
 }
 
-//若当前并发计数为0, 则快速返回; 否则阻塞等待,直到并发计数为0
-func (g *GoLimit) WaitZero() {
-	g.dataLock.Lock()
-
-	//无需等待
-	if g.count == 0 {
-		g.dataLock.Unlock()
-		return
-	}
-
-	//无广播通道, 创建一个
-	if g.zeroChan == nil {
-		g.zeroChan = make(chan interface{})
-	}
-
-	//复制通道后解锁, 避免从nil读数据
-	c := g.zeroChan
-	g.dataLock.Unlock()
-
-	<-c
+// 若当前并发计数为0, 则快速返回; 否则阻塞等待,直到并发计数为0
+func (sf *GoLimit) WaitZero() {
+	sf.waitLock.Lock()
+	defer sf.waitLock.Unlock()
 }
 
-//获取并发计数
-func (g *GoLimit) Count() uint {
-	return g.count
+// 获取并发计数
+func (sf *GoLimit) Count() uint64 {
+	n := atomic.LoadUint64(&sf.count)
+	max := atomic.LoadUint64(&sf.max)
+	if n > max {
+		return max
+	}
+
+	return n
 }
 
-//获取最大并发计数
-func (g *GoLimit) Max() uint {
-	return g.max
+// 获取最大并发计数
+func (sf *GoLimit) Max() uint64 {
+	return atomic.LoadUint64(&sf.max)
 }
